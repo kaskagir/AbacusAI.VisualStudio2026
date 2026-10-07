@@ -13,6 +13,12 @@ Native Visual Studio 2026 VSIX integration around the official Abacus AI CLI.
   - solution directory as working directory
   - current file
   - selected source code
+- **Datei-Anhänge-Unterstützung:**
+  - Drag & Drop von beliebigen Dateien in die Eingabezeile
+  - Ctrl+V zum Einfügen von Screenshots aus der Zwischenablage
+  - Unterstützte Bildformate: PNG, JPG, JPEG, GIF, BMP, WebP
+  - Alle Dateitypen können angehängt werden (Code, Logs, Konfigurationen, etc.)
+  - Dateiinhalte werden automatisch in den Prompt eingebettet
 - Uses `abacusai -p "..."` and therefore the official non-interactive CLI mode.
 - No Abacus API key is stored by this extension.
 
@@ -81,6 +87,66 @@ Then open:
 `View -> Other Windows -> Abacus AI`
 
 and use the prompt box.
+
+## Dateien und Screenshots verwenden
+
+Sie können beliebige Dateien und Screenshots direkt in der Eingabezeile des Abacus AI Tool Windows anhängen:
+
+### Methoden zum Anhängen von Dateien:
+
+1. **@filepath-Syntax:** Geben Sie `@` gefolgt vom Dateipfad ein (z.B. `@file.cs` oder `@C:\path\to\file.cs`)
+2. **Drag & Drop:** Ziehen Sie eine oder mehrere Dateien direkt in die Eingabezeile
+3. **Ctrl+V:** Kopieren Sie einen Screenshot in die Zwischenablage (z.B. mit Windows+Shift+S) und drücken Sie Ctrl+V in der Eingabezeile
+
+### @filepath-Syntax
+
+Die `@filepath`-Syntax ermöglicht es Ihnen, Dateien direkt in der Eingabezeile zu referenzieren:
+
+**Beispiele:**
+
+```
+Erkläre diese Datei: @Program.cs
+Debugge diese Fehler: @error.log und @config.json
+Überprüfe alle C#-Dateien: @*.cs
+Analysiere die Logs: @./logs/*.txt
+```
+
+**Unterstützte Pfad-Formate:**
+
+- **Relative Pfade:** `@file.cs`, `@./folder/file.cs`, `@../other/file.cs`
+- **Absolute Pfade:** `@C:\Users\Name\project\file.cs`
+- **Wildcards:** `@*.cs`, `@src/**/*.ts`, `@logs/*.log`
+
+**Verhalten:**
+
+- Die `@filepath`-Referenzen werden automatisch erkannt und die Dateien angehängt
+- Die Referenzen werden aus der Nachricht entfernt (nur die Frage wird angezeigt)
+- Die Dateien erscheinen in der Anhänge-Liste über der Eingabezeile
+- Sie können angehängte Dateien mit dem ✕-Button entfernen, bevor Sie die Nachricht senden
+- Fehlerhafte Pfade werden mit einer Warnung angezeigt
+
+**Limits:**
+
+- Maximale Dateigröße: 10 MB (konfigurierbar in Tools > Options > Abacus AI)
+- Maximale Dateien bei Wildcards: 50 (konfigurierbar in Tools > Options > Abacus AI)
+
+### Unterstützte Dateitypen:
+
+- **Bilder:** PNG, JPG, JPEG, GIF, BMP, WebP
+- **Code-Dateien:** .cs, .js, .py, .java, .cpp, .html, .css, etc.
+- **Konfigurationen:** .json, .xml, .yaml, .config, etc.
+- **Logs:** .log, .txt, etc.
+- **Alle anderen Dateitypen:** Die Inhalte werden als Text in den Prompt eingebettet
+
+### Verwendung:
+
+1. Geben Sie Ihre Frage mit `@filepath`-Referenzen ein, oder ziehen Sie Dateien per Drag & Drop, oder drücken Sie Ctrl+V
+2. Die Dateien erscheinen in einer Liste über der Eingabezeile
+3. Sie können Dateien mit dem ✕-Button entfernen
+4. Senden Sie die Nachricht
+5. Die Dateiinhalte werden automatisch an Abacus übermittelt
+
+Abacus kann dann die Dateien analysieren und Ihnen helfen, z.B. Code zu debuggen, Fehler zu erklären oder Konfigurationen zu überprüfen.
 
 ## Security
 

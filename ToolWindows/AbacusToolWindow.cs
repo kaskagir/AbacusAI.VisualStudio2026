@@ -1,12 +1,15 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Microsoft.VisualStudio.Shell;
 
 namespace AbacusAI.VisualStudio2026.ToolWindows
@@ -81,6 +84,72 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
         public event System.ComponentModel.PropertyChangedEventHandler PropertyChanged;
     }
 
+    internal sealed class FileAttachment : System.ComponentModel.INotifyPropertyChanged
+    {
+        public string FilePath { get; set; }
+        public string FileName { get; set; }
+        public long FileSize { get; set; }
+
+        string displayName;
+        public string DisplayName
+        {
+            get => displayName;
+            set
+            {
+                displayName = value;
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(DisplayName)));
+            }
+        }
+
+        public FileAttachment(string filePath)
+        {
+            FilePath = filePath;
+            FileName = Path.GetFileName(filePath);
+            try
+            {
+                FileSize = new FileInfo(filePath).Length;
+                DisplayName = $"{FileName} ({FormatFileSize(FileSize)})";
+            }
+            catch
+            {
+                DisplayName = FileName;
+            }
+        }
+
+        internal static string FormatFileSize(long bytes)
+        {
+            string[] sizes = { "B", "KB", "MB", "GB" };
+            double len = bytes;
+            int order = 0;
+            while (len >= 1024 && order < sizes.Length - 1)
+            {
+                order++;
+                len = len / 1024;
+            }
+            return $"{len:0.##} {sizes[order]}";
+        }
+
+        public event System.ComponentModel.PropertyChangedEventHandler PropertyChanged;
+    }
+
+    // Titel eines Tabs/einer Conversation. Separates Objekt, damit das TabItem-Header
+    // per Binding automatisch aktualisiert wird, sobald die erste Nachricht gesendet wurde.
+    internal sealed class ConversationInfo : System.ComponentModel.INotifyPropertyChanged
+    {
+        string title = "Neuer Chat";
+        public string Title
+        {
+            get => title;
+            set
+            {
+                title = value;
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(Title)));
+            }
+        }
+
+        public event System.ComponentModel.PropertyChangedEventHandler PropertyChanged;
+    }
+
     internal sealed class AbacusControl : UserControl
     {
         static readonly SolidColorBrush PanelBg = Freeze(Color.FromRgb(0x1B, 0x1B, 0x1F));
@@ -101,25 +170,11 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             return b;
         }
 
-        readonly System.Collections.ObjectModel.ObservableCollection<ChatMessage> messages
-            = new System.Collections.ObjectModel.ObservableCollection<ChatMessage>();
-
-        readonly ItemsControl chatList;
-        readonly ScrollViewer chatScroll;
-        readonly TextBox input = new TextBox
+        readonly TabControl tabControl = new TabControl
         {
-            AcceptsReturn = true,
-            TextWrapping = TextWrapping.Wrap,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            MaxHeight = 140,
-            MinHeight = 24,
-            Padding = new Thickness(4),
+            Background = PanelBg,
             BorderThickness = new Thickness(0),
-            Background = Brushes.Transparent,
-            Foreground = TextPrimary,
-            CaretBrush = TextPrimary,
-            FontSize = 13,
-            VerticalContentAlignment = VerticalAlignment.Center
+            Padding = new Thickness(0)
         };
 
         readonly TextBox executable = new TextBox
@@ -129,7 +184,8 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             Background = ControlBg,
             Foreground = TextPrimary,
             CaretBrush = TextPrimary,
-            BorderBrush = BorderCol
+            BorderBrush = BorderCol,
+            ToolTip = "CLI-Ausführbare Datei (wird aus Einstellungen geladen)"
         };
         readonly ComboBox modelBox = new ComboBox
         {
@@ -140,7 +196,6 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             SelectedValuePath = "Value",
             Foreground = Brushes.Black
         };
-        readonly Button send = new Button { Content = "Senden  ➤", Padding = new Thickness(14, 6, 14, 6), Margin = new Thickness(8, 0, 0, 0), Background = AccentBg, Foreground = Brushes.White, BorderBrush = AccentBg, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Bottom };
         readonly TextBlock status = new TextBlock { Foreground = TextSecondary, Margin = new Thickness(0, 2, 0, 0) };
 
         readonly TextBlock authStatus = new TextBlock
@@ -153,8 +208,7 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
         };
         readonly Button loginButton = new Button { Content = "Login", Margin = new Thickness(6, 0, 0, 0), Padding = new Thickness(8, 2, 8, 2), Background = ControlBg, Foreground = TextPrimary, BorderBrush = BorderCol };
 
-        ChatMessage pendingAssistantMessage;
-        readonly StringBuilder pendingAssistantText = new StringBuilder();
+        bool loginWindowOpen;
 
         static readonly string[] AuthFailureMarkers =
         {
@@ -169,11 +223,6 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
         // einfach erneut versuchen statt sich neu einzuloggen.
         const string KeystoreLockMarker = "could not acquire the keystore lock";
 
-        bool authFailureDetected;
-        bool keystoreLockDetected;
-        readonly StringBuilder authFailureDetails = new StringBuilder();
-        bool loginWindowOpen;
-
         static bool LooksLikeAuthFailure(string line)
         {
             if (string.IsNullOrEmpty(line)) return false;
@@ -185,12 +234,50 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             return false;
         }
 
+        AbacusOptions GetAbacusOptions()
+        {
+            try
+            {
+                var package = Package.GetGlobalService(typeof(Package)) as Package;
+                if (package != null)
+                {
+                    return (AbacusOptions)package.GetDialogPage(typeof(AbacusOptions));
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        void ApplyOptionsToUI(AbacusOptions options)
+        {
+            if (options == null) return;
+            
+            if (!string.IsNullOrWhiteSpace(options.CliExecutable))
+                executable.Text = options.CliExecutable;
+            
+            if (!string.IsNullOrWhiteSpace(options.DefaultModel))
+                modelBox.SelectedValue = options.DefaultModel;
+        }
+
+        void SaveOptionsFromUI(AbacusOptions options)
+        {
+            if (options == null) return;
+            
+            options.CliExecutable = executable.Text.Trim();
+            if (modelBox.SelectedValue != null)
+                options.DefaultModel = modelBox.SelectedValue.ToString();
+            
+            options.SaveSettingsToStorage();
+        }
+
         public AbacusControl(AbacusToolWindow owner)
         {
+            // Lade Optionen aus Visual Studio Einstellungen
+            var options = GetAbacusOptions();
+
             var root = new Grid { Margin = new Thickness(6), Background = PanelBg };
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
             var settingsBar = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 8) };
             settingsBar.Children.Add(new TextBlock { Text = "✦ Abacus AI", FontWeight = FontWeights.SemiBold, FontSize = 15, Foreground = TextPrimary, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2, 0, 12, 0) });
@@ -199,67 +286,152 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             settingsBar.Children.Add(new TextBlock { Text = "Modell:", Foreground = TextSecondary, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) });
             LoadModels();
             settingsBar.Children.Add(modelBox);
-            var clear = new Button { Content = "＋ Neuer Chat", Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(10, 3, 10, 3), Background = ControlBg, Foreground = TextPrimary, BorderBrush = BorderCol };
-            clear.Click += (_, __) => { messages.Clear(); status.Text = ""; };
-            settingsBar.Children.Add(clear);
+            
+            // Wende gespeicherte Optionen an
+            ApplyOptionsToUI(options);
+            var newChat = new Button { Content = "＋ Neuer Chat", Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(10, 3, 10, 3), Background = ControlBg, Foreground = TextPrimary, BorderBrush = BorderCol };
+            newChat.Click += (_, __) => AddTab(select: true);
+            settingsBar.Children.Add(newChat);
+            
+            var settingsBtn = new Button { Content = "⚙ Einstellungen", Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(10, 3, 10, 3), Background = ControlBg, Foreground = TextPrimary, BorderBrush = BorderCol };
+            settingsBtn.Click += (_, __) => OpenSettings();
+            settingsBar.Children.Add(settingsBtn);
+            
             settingsBar.Children.Add(loginButton);
             settingsBar.Children.Add(authStatus);
 
             loginButton.Click += async (_, __) => await LoginAsync();
             _ = RefreshAuthStatusAsync();
 
-            chatList = new ItemsControl { ItemsSource = messages, ItemTemplate = BuildMessageTemplate(), Background = PanelBg };
-            chatScroll = new ScrollViewer { Content = chatList, Background = PanelBg, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-
             var roundStyle = BuildRoundButtonStyle();
-            send.Style = roundStyle;
             loginButton.Style = roundStyle;
-            clear.Style = roundStyle;
+            newChat.Style = roundStyle;
+            settingsBtn.Style = roundStyle;
             FontFamily = UiFont;
             executable.Padding = new Thickness(4, 2, 4, 2);
             modelBox.Padding = new Thickness(4, 2, 4, 2);
 
-            var inputBorder = new Border
-            {
-                Background = ControlBg,
-                BorderBrush = BorderCol,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(8, 6, 8, 6),
-                Child = input
-            };
-
-            var inputBar = new Grid { Margin = new Thickness(0, 8, 0, 0) };
-            inputBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            inputBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            Grid.SetColumn(inputBorder, 0);
-            Grid.SetColumn(send, 1);
-            inputBar.Children.Add(inputBorder);
-            inputBar.Children.Add(send);
-
-            var bottom = new StackPanel();
-            bottom.Children.Add(inputBar);
-            bottom.Children.Add(status);
+            tabControl.ItemContainerStyle = BuildTabItemStyle();
+            tabControl.Template = BuildTabControlTemplate();
 
             Grid.SetRow(settingsBar, 0);
-            Grid.SetRow(chatScroll, 1);
-            Grid.SetRow(bottom, 2);
+            Grid.SetRow(tabControl, 1);
 
             root.Children.Add(settingsBar);
-            root.Children.Add(chatScroll);
-            root.Children.Add(bottom);
+            root.Children.Add(tabControl);
             Content = root;
 
-            send.Click += async (_, __) => await SendInputAsync();
-            input.PreviewKeyDown += async (_, e) =>
+            AddTab(select: true);
+        }
+
+        void OpenSettings()
+        {
+            try
             {
-                if (e.Key == System.Windows.Input.Key.Enter &&
-                    (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Shift) == 0)
+                ThreadHelper.ThrowIfNotOnUIThread();
+                var dte = Package.GetGlobalService(typeof(EnvDTE.DTE)) as EnvDTE.DTE;
+                if (dte != null)
                 {
-                    e.Handled = true;
-                    await SendInputAsync();
+                    dte.ExecuteCommand("Tools.Options");
                 }
+            }
+            catch { }
+        }
+
+        void AddTab(bool select)
+        {
+            var tab = new ChatTab(this);
+            var item = new TabItem { Content = tab };
+            item.Header = BuildTabHeader(tab.Info, item);
+            tab.Info.PropertyChanged += (_, __) => UpdateHeaderText(item, tab.Info);
+            tabControl.Items.Add(item);
+            if (select) tabControl.SelectedItem = item;
+        }
+
+        void CloseTab(TabItem item)
+        {
+            tabControl.Items.Remove(item);
+            if (tabControl.Items.Count == 0)
+                AddTab(select: true);
+        }
+
+        FrameworkElement BuildTabHeader(ConversationInfo info, TabItem owningItem)
+        {
+            var panel = new StackPanel { Orientation = Orientation.Horizontal };
+            var title = new TextBlock
+            {
+                Text = info.Title,
+                Foreground = TextPrimary,
+                VerticalAlignment = VerticalAlignment.Center,
+                MaxWidth = 140,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 0, 6, 0),
+                Tag = info
             };
+            var close = new Button
+            {
+                Content = "✕",
+                Width = 18,
+                Height = 18,
+                Padding = new Thickness(0),
+                FontSize = 10,
+                Background = Brushes.Transparent,
+                Foreground = TextSecondary,
+                BorderThickness = new Thickness(0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor = System.Windows.Input.Cursors.Hand
+            };
+            close.Click += (_, __) => CloseTab(owningItem);
+            panel.Children.Add(title);
+            panel.Children.Add(close);
+            return panel;
+        }
+
+        static void UpdateHeaderText(TabItem item, ConversationInfo info)
+        {
+            if (item.Header is StackPanel panel && panel.Children.Count > 0 && panel.Children[0] is TextBlock title)
+                title.Text = info.Title;
+        }
+
+        static Style BuildTabItemStyle()
+        {
+            const string xaml = @"<Style xmlns=""http://schemas.microsoft.com/winfx/2006/xaml/presentation"" xmlns:x=""http://schemas.microsoft.com/winfx/2006/xaml"" TargetType=""TabItem"">
+  <Setter Property=""Padding"" Value=""10,5,6,5""/>
+  <Setter Property=""Margin"" Value=""0,0,4,0""/>
+  <Setter Property=""Template"">
+    <Setter.Value>
+      <ControlTemplate TargetType=""TabItem"">
+        <Border x:Name=""bd"" CornerRadius=""8,8,0,0"" Padding=""{TemplateBinding Padding}"" Margin=""{TemplateBinding Margin}"" Background=""#2A2A30"" BorderBrush=""#38383A"" BorderThickness=""1,1,1,0"">
+          <ContentPresenter ContentSource=""Header"" VerticalAlignment=""Center""/>
+        </Border>
+        <ControlTemplate.Triggers>
+          <Trigger Property=""IsSelected"" Value=""True"">
+            <Setter TargetName=""bd"" Property=""Background"" Value=""#1B1B1F""/>
+            <Setter TargetName=""bd"" Property=""BorderBrush"" Value=""#4F8CFF""/>
+          </Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate>
+    </Setter.Value>
+  </Setter>
+</Style>";
+            return (Style)System.Windows.Markup.XamlReader.Parse(xaml);
+        }
+
+        static ControlTemplate BuildTabControlTemplate()
+        {
+            const string xaml = @"<ControlTemplate xmlns=""http://schemas.microsoft.com/winfx/2006/xaml/presentation"" xmlns:x=""http://schemas.microsoft.com/winfx/2006/xaml"" TargetType=""TabControl"">
+  <Grid Background=""#1B1B1F"">
+    <Grid.RowDefinitions>
+      <RowDefinition Height=""Auto""/>
+      <RowDefinition Height=""*""/>
+    </Grid.RowDefinitions>
+    <TabPanel Grid.Row=""0"" IsItemsHost=""True"" Background=""Transparent""/>
+    <Border Grid.Row=""1"" BorderBrush=""#38383A"" BorderThickness=""1"" Background=""#1B1B1F"">
+      <ContentPresenter ContentSource=""SelectedContent""/>
+    </Border>
+  </Grid>
+</ControlTemplate>";
+            return (ControlTemplate)System.Windows.Markup.XamlReader.Parse(xaml);
         }
 
         static Style BuildRoundButtonStyle()
@@ -284,7 +456,7 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             return (Style)System.Windows.Markup.XamlReader.Parse(xaml);
         }
 
-        static DataTemplate BuildMessageTemplate()
+        internal static DataTemplate BuildMessageTemplate()
         {
             var bubble = new FrameworkElementFactory(typeof(Border));
             bubble.SetValue(Border.PaddingProperty, new Thickness(12, 8, 12, 10));
@@ -359,8 +531,13 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
 
         public async Task SendAsync(string text)
         {
-            input.Text = text;
-            await SendInputAsync();
+            if (!(tabControl.SelectedItem is TabItem item) || !(item.Content is ChatTab tab))
+            {
+                AddTab(select: true);
+                item = (TabItem)tabControl.SelectedItem;
+                tab = (ChatTab)item.Content;
+            }
+            await tab.SendAsync(text);
         }
 
         async Task RefreshAuthStatusAsync()
@@ -410,6 +587,14 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             loginButton.Content = "Logout";
         }
 
+        void SetLoggedOutStatus(string tooltip)
+        {
+            authStatus.Foreground = WarningCol;
+            authStatus.Text = "● Nicht angemeldet";
+            authStatus.ToolTip = tooltip;
+            loginButton.Content = "Login";
+        }
+
         static string ExtractField(string output, string prefix)
         {
             foreach (var rawLine in output.Split('\n'))
@@ -425,11 +610,8 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
         {
             var isLoggingOut = string.Equals((string)loginButton.Content, "Logout", StringComparison.Ordinal);
             loginButton.IsEnabled = false;
-
-            var logMessage = new ChatMessage { IsUser = false, RoleLabel = isLoggingOut ? "Logout" : "Login", Text = "" };
-            var logText = new StringBuilder();
-            messages.Add(logMessage);
-            ScrollToEnd();
+            authStatus.Foreground = TextSecondary;
+            authStatus.Text = isLoggingOut ? "Melde ab..." : "Login läuft...";
 
             try
             {
@@ -439,40 +621,7 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
 
                 if (isLoggingOut)
                 {
-                    var psi = new ProcessStartInfo
-                    {
-                        FileName = exe,
-                        Arguments = subcommand,
-                        WorkingDirectory = workingDirectory,
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        CreateNoWindow = true,
-                        StandardOutputEncoding = Encoding.UTF8,
-                        StandardErrorEncoding = Encoding.UTF8
-                    };
-
-                    using (var process = new Process { StartInfo = psi, EnableRaisingEvents = true })
-                    {
-                        process.OutputDataReceived += (_, e) =>
-                        {
-                            if (e.Data == null) return;
-                            Dispatcher.BeginInvoke(new Action(() => AppendLine(logText, logMessage, e.Data)));
-                        };
-                        process.ErrorDataReceived += (_, e) =>
-                        {
-                            if (e.Data == null) return;
-                            Dispatcher.BeginInvoke(new Action(() => AppendLine(logText, logMessage, e.Data)));
-                        };
-
-                        process.Start();
-                        process.BeginOutputReadLine();
-                        process.BeginErrorReadLine();
-                        await Task.Run(() => process.WaitForExit());
-                    }
-
-                    if (logText.Length == 0)
-                        logMessage.Text = "Abgemeldet.";
+                    await RunCaptureAsync(exe, subcommand);
                 }
                 else
                 {
@@ -486,17 +635,11 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
                         && currentStatus.IndexOf("Not logged in", StringComparison.OrdinalIgnoreCase) < 0
                         && currentStatus.IndexOf("Not authenticated", StringComparison.OrdinalIgnoreCase) < 0;
 
-                    if (alreadyLoggedIn)
-                    {
-                        logMessage.Text = "Bereits angemeldet - kein neues Login-Fenster nötig. Status wird aktualisiert...";
-                    }
-                    else
+                    if (!alreadyLoggedIn)
                     {
                         // "auth login" needs a real, interactive console (it refuses to run with
                         // redirected/no-window stdio). Open a visible console window for it instead
                         // of capturing its output.
-                        logMessage.Text = "Es öffnet sich ein Konsolenfenster für den Login. Bitte dort anmelden und danach das Fenster schließen.";
-
                         var psi = new ProcessStartInfo
                         {
                             FileName = "cmd.exe",
@@ -519,14 +662,13 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
                         {
                             loginWindowOpen = false;
                         }
-
-                        logMessage.Text = "Login-Fenster geschlossen. Status wird aktualisiert...";
                     }
                 }
             }
             catch (Exception ex)
             {
-                logMessage.Text = "Fehler: " + ex.Message;
+                authStatus.Foreground = ErrorCol;
+                authStatus.Text = "Fehler: " + ex.Message;
             }
             finally
             {
@@ -556,121 +698,6 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
                 var stderr = await process.StandardError.ReadToEndAsync();
                 await Task.Run(() => process.WaitForExit());
                 return string.IsNullOrWhiteSpace(stdout) ? stderr : stdout;
-            }
-        }
-
-        async Task SendInputAsync()
-        {
-            var text = input.Text?.Trim();
-            if (string.IsNullOrEmpty(text)) return;
-
-            if (loginWindowOpen)
-            {
-                messages.Add(new ChatMessage
-                {
-                    IsUser = false,
-                    RoleLabel = "Abacus AI",
-                    Text = "Es ist noch ein Login-Fenster offen. Bitte dort zuerst die Frage beantworten und das Fenster schließen, bevor der Chat weiter benutzt wird."
-                });
-                ScrollToEnd();
-                return;
-            }
-
-            input.Text = string.Empty;
-            send.IsEnabled = false;
-            status.Text = "Abacus arbeitet...";
-
-            messages.Add(new ChatMessage { IsUser = true, RoleLabel = "Du", Text = text });
-            ScrollToEnd();
-
-            pendingAssistantMessage = new ChatMessage { IsUser = false, RoleLabel = "Abacus AI", Text = "" };
-            pendingAssistantText.Clear();
-            authFailureDetected = false;
-            keystoreLockDetected = false;
-            authFailureDetails.Clear();
-            messages.Add(pendingAssistantMessage);
-
-            try
-            {
-                var workingDirectory = VisualStudioContext.GetCurrent().WorkingDirectory;
-                var exe = executable.Text.Trim();
-                var prompt = BuildConversationPrompt(text);
-
-                var psi = new ProcessStartInfo
-                {
-                    FileName = exe,
-                    Arguments = BuildModelArgument() + "-p " + Quote(prompt),
-                    WorkingDirectory = workingDirectory,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true,
-                    StandardOutputEncoding = Encoding.UTF8,
-                    StandardErrorEncoding = Encoding.UTF8
-                };
-
-                using (var process = new Process { StartInfo = psi, EnableRaisingEvents = true })
-                {
-                    process.OutputDataReceived += (_, e) =>
-                    {
-                        if (e.Data == null) return;
-                        Dispatcher.BeginInvoke(new Action(() => AppendAssistantLine(e.Data)));
-                    };
-                    process.ErrorDataReceived += (_, e) =>
-                    {
-                        if (e.Data == null) return;
-                        Dispatcher.BeginInvoke(new Action(() =>
-                        {
-                            if (LooksLikeAuthFailure(e.Data))
-                            {
-                                authFailureDetected = true;
-                                authFailureDetails.AppendLine(e.Data);
-                                return;
-                            }
-                            if (e.Data.IndexOf(KeystoreLockMarker, StringComparison.OrdinalIgnoreCase) >= 0)
-                            {
-                                keystoreLockDetected = true;
-                                authFailureDetails.AppendLine(e.Data);
-                                return;
-                            }
-                            AppendAssistantLine(e.Data);
-                        }));
-                    };
-
-                    process.Start();
-                    process.BeginOutputReadLine();
-                    process.BeginErrorReadLine();
-                    await Task.Run(() => process.WaitForExit());
-                }
-
-                if (authFailureDetected)
-                {
-                    pendingAssistantText.Clear();
-                    AppendAssistantLine("⚠ Anmeldung ungültig oder abgelaufen. Bitte oben auf \"Login\" klicken und den Login in einem normalen Terminal abschließen.");
-                    authStatus.Foreground = WarningCol;
-                    authStatus.Text = "● Nicht angemeldet";
-                    authStatus.ToolTip = authFailureDetails.ToString().Trim();
-                    loginButton.Content = "Login";
-                }
-                else if (keystoreLockDetected)
-                {
-                    pendingAssistantText.Clear();
-                    AppendAssistantLine("⚠ Die Abacus CLI war kurzzeitig blockiert (z.B. durch ein offenes Login-Fenster). Bitte Login-Fenster schließen/beantworten und die Nachricht erneut senden.");
-                }
-                else if (pendingAssistantText.Length == 0)
-                {
-                    AppendAssistantLine("(keine Ausgabe)");
-                }
-            }
-            catch (Exception ex)
-            {
-                AppendAssistantLine("Fehler beim Ausführen der Abacus CLI: " + ex.Message);
-            }
-            finally
-            {
-                send.IsEnabled = true;
-                status.Text = "";
-                pendingAssistantMessage = null;
             }
         }
 
@@ -709,50 +736,879 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             return "--model " + Quote(model) + " ";
         }
 
-        void AppendAssistantLine(string line)
-        {
-            AppendLine(pendingAssistantText, pendingAssistantMessage, line);
-        }
-
-        void AppendLine(StringBuilder buffer, ChatMessage message, string line)
-        {
-            if (buffer.Length > 0) buffer.AppendLine();
-            buffer.Append(line);
-            if (message != null) message.Text = buffer.ToString();
-            ScrollToEnd();
-        }
-
-        void ScrollToEnd()
-        {
-            chatScroll.ScrollToEnd();
-        }
-
-        string BuildConversationPrompt(string latestUserText)
-        {
-            var sb = new StringBuilder();
-            var relevant = new System.Collections.Generic.List<ChatMessage>();
-            foreach (var m in messages)
-            {
-                if (ReferenceEquals(m, pendingAssistantMessage)) continue;
-                relevant.Add(m);
-            }
-            if (relevant.Count > 1)
-            {
-                sb.AppendLine("Conversation so far:");
-                for (int i = 0; i < relevant.Count - 1; i++)
-                {
-                    sb.AppendLine((relevant[i].IsUser ? "User: " : "Assistant: ") + relevant[i].Text);
-                }
-                sb.AppendLine();
-                sb.AppendLine("New message:");
-            }
-            sb.Append(latestUserText);
-            return sb.ToString();
-        }
-
         static string Quote(string value)
         {
             return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", " ").Replace("\n", "\\n") + "\"";
+        }
+
+        // Eine einzelne Conversation/Tab: eigene Nachrichtenliste, eigenes Eingabefeld,
+        // eigener CLI-Prozessaufruf. CLI-Pfad, Modell und Login bleiben oben geteilt.
+        sealed class ChatTab : UserControl
+        {
+            readonly AbacusControl owner;
+            public readonly ConversationInfo Info = new ConversationInfo();
+
+            readonly System.Collections.ObjectModel.ObservableCollection<ChatMessage> messages
+                = new System.Collections.ObjectModel.ObservableCollection<ChatMessage>();
+
+            readonly System.Collections.ObjectModel.ObservableCollection<FileAttachment> attachments
+                = new System.Collections.ObjectModel.ObservableCollection<FileAttachment>();
+
+            readonly ItemsControl chatList;
+            readonly ScrollViewer chatScroll;
+            readonly ItemsControl attachmentList;
+            readonly TextBox input = new TextBox
+            {
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                MaxHeight = 140,
+                MinHeight = 24,
+                Padding = new Thickness(4),
+                BorderThickness = new Thickness(0),
+                Background = Brushes.Transparent,
+                Foreground = TextPrimary,
+                CaretBrush = TextPrimary,
+                FontSize = 13,
+                VerticalContentAlignment = VerticalAlignment.Center
+            };
+            readonly Button send = new Button { Content = "Senden  ➤", Padding = new Thickness(14, 6, 14, 6), Margin = new Thickness(8, 0, 0, 0), Background = AccentBg, Foreground = Brushes.White, BorderBrush = AccentBg, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Bottom };
+            readonly Button cancel = new Button { Content = "⊘ Abbrechen", Padding = new Thickness(14, 6, 14, 6), Margin = new Thickness(8, 0, 0, 0), Background = ErrorCol, Foreground = Brushes.White, BorderBrush = ErrorCol, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Bottom, Visibility = Visibility.Collapsed };
+            readonly TextBlock status = new TextBlock { Foreground = TextSecondary, Margin = new Thickness(0, 2, 0, 0) };
+
+            ChatMessage pendingAssistantMessage;
+            readonly StringBuilder pendingAssistantText = new StringBuilder();
+            bool authFailureDetected;
+            bool keystoreLockDetected;
+            readonly StringBuilder authFailureDetails = new StringBuilder();
+            Process currentProcess;
+
+            // Conversation-ID, die die Abacus CLI in ihrer Ausgabe zurückmeldet. Sobald bekannt,
+            // wird sie per --resume an jede weitere Nachricht dieses Tabs angehängt, damit der
+            // Server den Gesprächsverlauf führt statt ihn clientseitig erneut mitzuschicken.
+            string conversationId;
+            bool lastLineWasMeta;
+
+            // Erkennt die Metadaten-Zeilen, die die CLI zu jeder Antwort ausgibt
+            // (z.B. "model: ... | cwd: ... | conversation: <id>", "title: ...",
+            // "Credits used: ...", "To resume Session:" / "abacusai -p --resume <id>")
+            // und blendet sie aus dem Chatverlauf aus, statt sie als Antworttext anzuzeigen.
+            static readonly System.Text.RegularExpressions.Regex ConversationLineRegex =
+                new System.Text.RegularExpressions.Regex(@"^model:.*\|\s*conversation:\s*(\S+)\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            static readonly System.Text.RegularExpressions.Regex TitleLineRegex =
+                new System.Text.RegularExpressions.Regex(@"^title:\s*(.+?)\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            static readonly System.Text.RegularExpressions.Regex ResumeCommandRegex =
+                new System.Text.RegularExpressions.Regex(@"--resume\s+(\S+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            static readonly System.Text.RegularExpressions.Regex CreditsLineRegex =
+                new System.Text.RegularExpressions.Regex(@"^Credits used:", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            static readonly System.Text.RegularExpressions.Regex ResumeHintLineRegex =
+                new System.Text.RegularExpressions.Regex(@"^To resume Session:\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            bool TryHandleMetaLine(string line)
+            {
+                var convMatch = ConversationLineRegex.Match(line);
+                if (convMatch.Success)
+                {
+                    conversationId = convMatch.Groups[1].Value;
+                    lastLineWasMeta = true;
+                    return true;
+                }
+                var titleMatch = TitleLineRegex.Match(line);
+                if (titleMatch.Success)
+                {
+                    Info.Title = titleMatch.Groups[1].Value;
+                    lastLineWasMeta = true;
+                    return true;
+                }
+                if (CreditsLineRegex.IsMatch(line) || ResumeHintLineRegex.IsMatch(line))
+                {
+                    lastLineWasMeta = true;
+                    return true;
+                }
+                var resumeCmdMatch = ResumeCommandRegex.Match(line);
+                if (resumeCmdMatch.Success)
+                {
+                    if (string.IsNullOrEmpty(conversationId))
+                        conversationId = resumeCmdMatch.Groups[1].Value;
+                    lastLineWasMeta = true;
+                    return true;
+                }
+                if (line.Length == 0 && lastLineWasMeta)
+                {
+                    // Leerzeile direkt nach einem Metadaten-Block gehört noch dazu, nicht zur Antwort.
+                    return true;
+                }
+                lastLineWasMeta = false;
+                return false;
+            }
+
+            public ChatTab(AbacusControl owner)
+            {
+                this.owner = owner;
+
+                chatList = new ItemsControl { ItemsSource = messages, ItemTemplate = BuildMessageTemplate(), Background = PanelBg };
+                chatScroll = new ScrollViewer { Content = chatList, Background = PanelBg, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+                send.Style = BuildRoundButtonStyle();
+                cancel.Style = BuildRoundButtonStyle();
+
+                var inputBorder = new Border
+                {
+                    Background = ControlBg,
+                    BorderBrush = BorderCol,
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(10),
+                    Padding = new Thickness(8, 6, 8, 6),
+                    Child = input
+                };
+
+                var inputBar = new Grid { Margin = new Thickness(6, 8, 6, 0) };
+                inputBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                inputBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                inputBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                Grid.SetColumn(inputBorder, 0);
+                Grid.SetColumn(send, 1);
+                Grid.SetColumn(cancel, 2);
+                inputBar.Children.Add(inputBorder);
+                inputBar.Children.Add(send);
+                inputBar.Children.Add(cancel);
+
+                // Datei-Anhänge UI
+                attachmentList = new ItemsControl 
+                { 
+                    ItemsSource = attachments, 
+                    ItemTemplate = BuildAttachmentTemplate(), 
+                    Background = PanelBg,
+                    Margin = new Thickness(6, 4, 6, 4)
+                };
+                var attachmentScroll = new ScrollViewer 
+                { 
+                    Content = attachmentList, 
+                    Background = PanelBg, 
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                    MaxHeight = 80
+                };
+
+                var bottom = new StackPanel();
+                bottom.Children.Add(attachmentScroll);
+                bottom.Children.Add(inputBar);
+                bottom.Children.Add(new Border { Padding = new Thickness(6, 0, 6, 4), Child = status });
+
+                var grid = new Grid { Background = PanelBg };
+                grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+                grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                Grid.SetRow(chatScroll, 0);
+                Grid.SetRow(bottom, 1);
+                grid.Children.Add(chatScroll);
+                grid.Children.Add(bottom);
+                Content = grid;
+
+                send.Click += async (_, __) => await SendInputAsync();
+                cancel.Click += (_, __) => CancelCurrentProcess();
+                input.PreviewKeyDown += async (_, e) =>
+                {
+                    if (e.Key == System.Windows.Input.Key.Enter &&
+                        (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Shift) == 0)
+                    {
+                        e.Handled = true;
+                        await SendInputAsync();
+                    }
+                    // Ctrl+V für Dateien/Bilder aus Zwischenablage
+                    else if (e.Key == System.Windows.Input.Key.V &&
+                        (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Control) != 0)
+                    {
+                        // Versuche zuerst, Dateien/Bilder zu verarbeiten
+                        if (TryHandlePasteFilesOrImages())
+                        {
+                            e.Handled = true;
+                        }
+                        // Sonst: Standard-Paste-Verhalten (Text)
+                    }
+                };
+
+                // Drag&Drop aktivieren
+                inputBorder.AllowDrop = true;
+                inputBorder.DragOver += (_, e) =>
+                {
+                    e.Effects = (e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetDataPresent("System.Windows.Forms.DataFormats+Bitmap"))
+                        ? DragDropEffects.Copy
+                        : DragDropEffects.None;
+                    e.Handled = true;
+                };
+                inputBorder.Drop += (_, e) =>
+                {
+                    e.Handled = true;
+                    HandleDroppedFiles(e);
+                };
+            }
+
+            public async Task SendAsync(string text)
+            {
+                input.Text = text;
+                await SendInputAsync();
+            }
+
+            void CancelCurrentProcess()
+            {
+                if (currentProcess != null && !currentProcess.HasExited)
+                {
+                    try
+                    {
+                        currentProcess.Kill();
+                        AppendAssistantLine("\n⊘ Conversation unterbrochen.");
+                        status.Text = "Unterbrochen";
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendAssistantLine("\n⚠ Fehler beim Abbrechen: " + ex.Message);
+                    }
+                }
+            }
+
+
+
+            void AppendAssistantLine(string line)
+            {
+                AppendLine(pendingAssistantText, pendingAssistantMessage, line);
+            }
+
+            void AppendLine(StringBuilder buffer, ChatMessage message, string line)
+            {
+                if (buffer.Length > 0) buffer.AppendLine();
+                buffer.Append(line);
+                if (message != null) message.Text = buffer.ToString();
+                ScrollToEnd();
+            }
+
+            void ScrollToEnd()
+            {
+                chatScroll.ScrollToEnd();
+            }
+
+            bool TryHandlePasteFilesOrImages()
+            {
+                try
+                {
+                    var dataObject = Clipboard.GetDataObject();
+                    if (dataObject == null) return false;
+
+                    // Versuche, ein Bild aus der Zwischenablage zu holen
+                    if (dataObject.GetDataPresent(DataFormats.Bitmap))
+                    {
+                        var bitmap = dataObject.GetData(DataFormats.Bitmap) as System.Drawing.Bitmap;
+                        if (bitmap != null)
+                        {
+                            InsertBitmapToInput(bitmap);
+                            return true;
+                        }
+                    }
+                    
+                    // Versuche, Dateien aus der Zwischenablage zu holen
+                    if (dataObject.GetDataPresent(DataFormats.FileDrop))
+                    {
+                        var files = dataObject.GetData(DataFormats.FileDrop) as string[];
+                        if (files != null && files.Length > 0)
+                        {
+                            foreach (var file in files)
+                            {
+                                AddFileAttachment(file);
+                            }
+                            return true;
+                        }
+                    }
+                    
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    status.Text = "Fehler beim Einfügen: " + ex.Message;
+                    return false;
+                }
+            }
+
+            void HandleDroppedFiles(DragEventArgs e)
+            {
+                try
+                {
+                    // Versuche, Dateien zu holen
+                    if (e.Data.GetDataPresent(DataFormats.FileDrop))
+                    {
+                        var files = e.Data.GetData(DataFormats.FileDrop) as string[];
+                        if (files != null && files.Length > 0)
+                        {
+                            foreach (var file in files)
+                            {
+                                AddFileAttachment(file);
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    status.Text = "Fehler beim Verarbeiten der Datei: " + ex.Message;
+                }
+            }
+
+            bool IsImageFile(string filePath)
+            {
+                var ext = Path.GetExtension(filePath).ToLowerInvariant();
+                return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" || ext == ".bmp" || ext == ".webp";
+            }
+
+            void InsertBitmapToInput(System.Drawing.Bitmap bitmap)
+            {
+                try
+                {
+                    // Speichere das Bild temporär
+                    var tempDir = Path.Combine(Path.GetTempPath(), "AbacusAI");
+                    Directory.CreateDirectory(tempDir);
+                    var tempFile = Path.Combine(tempDir, "screenshot_" + DateTime.Now.Ticks + ".png");
+                    bitmap.Save(tempFile, System.Drawing.Imaging.ImageFormat.Png);
+
+                    InsertImageFileToInput(tempFile);
+                }
+                catch (Exception ex)
+                {
+                    status.Text = "Fehler beim Speichern des Bildes: " + ex.Message;
+                }
+            }
+
+            void InsertImageFileToInput(string imagePath)
+            {
+                try
+                {
+                    if (!File.Exists(imagePath))
+                    {
+                        status.Text = "Bilddatei nicht gefunden: " + imagePath;
+                        return;
+                    }
+
+                    // Konvertiere das Bild zu Base64
+                    var imageBytes = File.ReadAllBytes(imagePath);
+                    var base64 = Convert.ToBase64String(imageBytes);
+                    var ext = Path.GetExtension(imagePath).ToLowerInvariant().TrimStart('.');
+                    var mimeType = GetMimeType(ext);
+
+                    // Füge das Bild als Markdown-Bild-Tag ein
+                    var imageMarkdown = $"![Screenshot]({imagePath})";
+                    
+                    // Oder als Data-URI (für direkte Einbettung):
+                    // var imageMarkdown = $"![Screenshot](data:{mimeType};base64,{base64})";
+
+                    if (input.Text.Length > 0 && !input.Text.EndsWith("\n"))
+                        input.Text += "\n";
+                    
+                    input.Text += imageMarkdown;
+                    input.Focus();
+                    input.CaretIndex = input.Text.Length;
+
+                    status.Text = "Bild eingefügt: " + Path.GetFileName(imagePath);
+                }
+                catch (Exception ex)
+                {
+                    status.Text = "Fehler beim Einfügen des Bildes: " + ex.Message;
+                }
+            }
+
+            string GetMimeType(string extension)
+            {
+                return extension switch
+                {
+                    "png" => "image/png",
+                    "jpg" or "jpeg" => "image/jpeg",
+                    "gif" => "image/gif",
+                    "bmp" => "image/bmp",
+                    "webp" => "image/webp",
+                    _ => "image/png"
+                };
+            }
+
+            void AddFileAttachment(string filePath)
+            {
+                try
+                {
+                    if (!File.Exists(filePath))
+                    {
+                        status.Text = "Datei nicht gefunden: " + filePath;
+                        return;
+                    }
+
+                    // Prüfe, ob die Datei bereits hinzugefügt wurde
+                    foreach (var att in attachments)
+                    {
+                        if (att.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            status.Text = "Datei bereits hinzugefügt: " + Path.GetFileName(filePath);
+                            return;
+                        }
+                    }
+
+                    var attachment = new FileAttachment(filePath);
+                    attachments.Add(attachment);
+                    status.Text = "Datei hinzugefügt: " + attachment.DisplayName;
+                }
+                catch (Exception ex)
+                {
+                    status.Text = "Fehler beim Hinzufügen der Datei: " + ex.Message;
+                }
+            }
+
+            void RemoveFileAttachment(FileAttachment attachment)
+            {
+                attachments.Remove(attachment);
+                status.Text = "Datei entfernt: " + attachment.FileName;
+            }
+
+            (string cleanedText, int successCount, int errorCount) ParseAndAttachFiles(string inputText)
+            {
+                var successCount = 0;
+                var errorCount = 0;
+                var errors = new System.Collections.Generic.List<string>();
+                
+                var pattern = @"@([^\s\n]+)";
+                var matches = System.Text.RegularExpressions.Regex.Matches(inputText, pattern);
+                
+                foreach (System.Text.RegularExpressions.Match match in matches)
+                {
+                    var fileRef = match.Groups[1].Value;
+                    if (!TryAddFileReference(fileRef, out var errorMsg))
+                    {
+                        errorCount++;
+                        errors.Add(errorMsg);
+                    }
+                    else
+                    {
+                        successCount++;
+                    }
+                }
+                
+                var cleanedText = System.Text.RegularExpressions.Regex.Replace(inputText, pattern, "").Trim();
+                
+                if (errorCount > 0)
+                {
+                    var errorSummary = string.Join("; ", errors.Take(3).ToList());
+                    status.Text = $"⚠ {successCount} Datei(en) erkannt, {errorCount} Fehler: {errorSummary}";
+                }
+                else if (successCount > 0)
+                {
+                    status.Text = $"✓ {successCount} Datei(en) erkannt";
+                }
+                
+                return (cleanedText, successCount, errorCount);
+            }
+
+            bool TryAddFileReference(string fileRef, out string errorMessage)
+            {
+                errorMessage = null;
+                
+                try
+                {
+                    if (fileRef.Contains("*") || fileRef.Contains("?"))
+                    {
+                        return TryAddWildcardFiles(fileRef, out errorMessage);
+                    }
+                    
+                    return TryAddSingleFile(fileRef, out errorMessage);
+                }
+                catch (Exception ex)
+                {
+                    errorMessage = $"Fehler bei '{fileRef}': {ex.Message}";
+                    return false;
+                }
+            }
+
+            bool TryAddSingleFile(string filePath, out string errorMessage)
+            {
+                errorMessage = null;
+                
+                if (!IsValidFilePath(filePath))
+                {
+                    errorMessage = $"Ungültiger Dateipfad: {filePath}";
+                    return false;
+                }
+                
+                if (!File.Exists(filePath))
+                {
+                    errorMessage = $"Datei nicht gefunden: {filePath}";
+                    return false;
+                }
+                
+                var fileInfo = new FileInfo(filePath);
+                const long maxSize = 10 * 1024 * 1024;
+                if (fileInfo.Length > maxSize)
+                {
+                    errorMessage = $"Datei zu groß ({FileAttachment.FormatFileSize(fileInfo.Length)}): {filePath}";
+                    return false;
+                }
+                
+                foreach (var att in attachments)
+                {
+                    if (att.FilePath.Equals(filePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        errorMessage = $"Datei bereits hinzugefügt: {Path.GetFileName(filePath)}";
+                        return false;
+                    }
+                }
+                
+                var attachment = new FileAttachment(filePath);
+                attachments.Add(attachment);
+                return true;
+            }
+
+            bool TryAddWildcardFiles(string pattern, out string errorMessage)
+            {
+                errorMessage = null;
+                var addedCount = 0;
+                
+                try
+                {
+                    var directory = Path.GetDirectoryName(pattern);
+                    if (string.IsNullOrEmpty(directory))
+                        directory = ".";
+                    
+                    if (!Directory.Exists(directory))
+                    {
+                        errorMessage = $"Verzeichnis nicht gefunden: {directory}";
+                        return false;
+                    }
+                    
+                    var filePattern = Path.GetFileName(pattern);
+                    var files = Directory.GetFiles(directory, filePattern, SearchOption.TopDirectoryOnly);
+                    
+                    if (files.Length == 0)
+                    {
+                        errorMessage = $"Keine Dateien gefunden für: {pattern}";
+                        return false;
+                    }
+                    
+                    if (files.Length > 50)
+                    {
+                        errorMessage = $"Zu viele Dateien ({files.Length}), max. 50 erlaubt";
+                        return false;
+                    }
+                    
+                    foreach (var file in files)
+                    {
+                        if (TryAddSingleFile(file, out _))
+                            addedCount++;
+                    }
+                    
+                    if (addedCount == 0)
+                    {
+                        errorMessage = $"Keine Dateien konnten hinzugefügt werden: {pattern}";
+                        return false;
+                    }
+                    
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    errorMessage = $"Fehler beim Wildcard-Matching: {ex.Message}";
+                    return false;
+                }
+            }
+
+            bool IsValidFilePath(string path)
+            {
+                if (string.IsNullOrWhiteSpace(path))
+                    return false;
+                
+                try
+                {
+                    var invalidChars = Path.GetInvalidPathChars();
+                    if (path.IndexOfAny(invalidChars) >= 0)
+                        return false;
+                    
+                    if (path.Contains("*") || path.Contains("?"))
+                        return true;
+                    
+                    return File.Exists(path);
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
+            DataTemplate BuildAttachmentTemplate()
+            {
+                var template = new DataTemplate();
+                var border = new FrameworkElementFactory(typeof(Border));
+                border.SetValue(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x30)));
+                border.SetValue(Border.BorderBrushProperty, new SolidColorBrush(Color.FromRgb(0x38, 0x38, 0x3A)));
+                border.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+                border.SetValue(Border.CornerRadiusProperty, new CornerRadius(6));
+                border.SetValue(Border.PaddingProperty, new Thickness(8, 4, 4, 4));
+                border.SetValue(Border.MarginProperty, new Thickness(0, 2, 4, 2));
+
+                var grid = new FrameworkElementFactory(typeof(Grid));
+                
+                // Spalten zum Grid hinzufügen
+                var col1Factory = new FrameworkElementFactory(typeof(ColumnDefinition));
+                col1Factory.SetValue(ColumnDefinition.WidthProperty, new GridLength(1, GridUnitType.Star));
+                grid.AppendChild(col1Factory);
+                
+                var col2Factory = new FrameworkElementFactory(typeof(ColumnDefinition));
+                col2Factory.SetValue(ColumnDefinition.WidthProperty, GridLength.Auto);
+                grid.AppendChild(col2Factory);
+                
+                var textBlock = new FrameworkElementFactory(typeof(TextBlock));
+                textBlock.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("DisplayName"));
+                textBlock.SetValue(TextBlock.ForegroundProperty, new SolidColorBrush(Color.FromRgb(0xF1, 0xF1, 0xF1)));
+                textBlock.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
+                textBlock.SetValue(TextBlock.FontSizeProperty, 12.0);
+                textBlock.SetValue(Grid.ColumnProperty, 0);
+
+                var button = new FrameworkElementFactory(typeof(Button));
+                button.SetValue(Button.ContentProperty, "✕");
+                button.SetValue(Button.WidthProperty, 20.0);
+                button.SetValue(Button.HeightProperty, 20.0);
+                button.SetValue(Button.PaddingProperty, new Thickness(0));
+                button.SetValue(Button.MarginProperty, new Thickness(4, 0, 0, 0));
+                button.SetValue(Button.FontSizeProperty, 10.0);
+                button.SetValue(Button.BackgroundProperty, Brushes.Transparent);
+                button.SetValue(Button.ForegroundProperty, new SolidColorBrush(Color.FromRgb(0xB8, 0xB8, 0xB8)));
+                button.SetValue(Button.BorderThicknessProperty, new Thickness(0));
+                button.SetValue(Button.CursorProperty, System.Windows.Input.Cursors.Hand);
+                button.SetValue(Button.VerticalAlignmentProperty, VerticalAlignment.Center);
+                button.SetValue(Grid.ColumnProperty, 1);
+                button.AddHandler(Button.ClickEvent, new RoutedEventHandler((s, e) =>
+                {
+                    if (s is Button btn && btn.DataContext is FileAttachment att)
+                    {
+                        RemoveFileAttachment(att);
+                    }
+                }));
+
+                grid.AppendChild(textBlock);
+                grid.AppendChild(button);
+                border.AppendChild(grid);
+                template.VisualTree = border;
+                return template;
+            }
+
+            async Task SendInputAsync()
+            {
+                var text = input.Text?.Trim();
+                if (string.IsNullOrEmpty(text) && attachments.Count == 0) return;
+
+                var (cleanedText, fileSuccessCount, fileErrorCount) = ParseAndAttachFiles(text ?? "");
+                
+                if (fileErrorCount > 0 && fileSuccessCount == 0)
+                {
+                    return;
+                }
+                
+                text = cleanedText;
+
+                if (owner.loginWindowOpen)
+                {
+                    messages.Add(new ChatMessage
+                    {
+                        IsUser = false,
+                        RoleLabel = "Abacus AI",
+                        Text = "Es ist noch ein Login-Fenster offen. Bitte dort zuerst die Frage beantworten und das Fenster schließen, bevor der Chat weiter benutzt wird."
+                    });
+                    ScrollToEnd();
+                    return;
+                }
+
+                if (messages.Count == 0)
+                    Info.Title = (text?.Length ?? 0) > 28 ? text.Substring(0, 28) + "..." : (text ?? "Datei-Upload");
+
+                input.Text = string.Empty;
+                send.IsEnabled = false;
+                cancel.Visibility = Visibility.Visible;
+                status.Text = "Abacus arbeitet...";
+
+                var userMessage = text ?? "";
+                if (attachments.Count > 0)
+                {
+                    userMessage += "\n\nAngehängte Dateien:\n";
+                    foreach (var att in attachments)
+                    {
+                        userMessage += $"- {att.FileName}\n";
+                    }
+                }
+
+                messages.Add(new ChatMessage { IsUser = true, RoleLabel = "Du", Text = userMessage });
+                ScrollToEnd();
+
+                pendingAssistantMessage = new ChatMessage { IsUser = false, RoleLabel = "Abacus AI", Text = "" };
+                pendingAssistantText.Clear();
+                authFailureDetected = false;
+                keystoreLockDetected = false;
+                authFailureDetails.Clear();
+                messages.Add(pendingAssistantMessage);
+
+                try
+                {
+                    var workingDirectory = VisualStudioContext.GetCurrent().WorkingDirectory;
+                    var exe = owner.executable.Text.Trim();
+                    
+                    // Baue den Prompt mit Datei-Inhalten
+                    var prompt = string.IsNullOrEmpty(conversationId) 
+                        ? BuildConversationPrompt(text, attachments) 
+                        : BuildPromptWithAttachments(text, attachments);
+                    
+                    var resumeArgument = string.IsNullOrEmpty(conversationId) ? "" : "--resume " + Quote(conversationId) + " ";
+
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = exe,
+                        Arguments = owner.BuildModelArgument() + "-p " + resumeArgument + Quote(prompt),
+                        WorkingDirectory = workingDirectory,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true,
+                        StandardOutputEncoding = Encoding.UTF8,
+                        StandardErrorEncoding = Encoding.UTF8
+                    };
+
+                    currentProcess = new Process { StartInfo = psi, EnableRaisingEvents = true };
+                    using (var process = currentProcess)
+                    {
+                        process.OutputDataReceived += (_, e) =>
+                        {
+                            if (e.Data == null) return;
+                            Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                if (TryHandleMetaLine(e.Data)) return;
+                                AppendAssistantLine(e.Data);
+                            }));
+                        };
+                        process.ErrorDataReceived += (_, e) =>
+                        {
+                            if (e.Data == null) return;
+                            Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                if (LooksLikeAuthFailure(e.Data))
+                                {
+                                    authFailureDetected = true;
+                                    authFailureDetails.AppendLine(e.Data);
+                                    return;
+                                }
+                                if (e.Data.IndexOf(KeystoreLockMarker, StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    keystoreLockDetected = true;
+                                    authFailureDetails.AppendLine(e.Data);
+                                    return;
+                                }
+                                if (TryHandleMetaLine(e.Data)) return;
+                                AppendAssistantLine(e.Data);
+                            }));
+                        };
+
+                        process.Start();
+                        process.BeginOutputReadLine();
+                        process.BeginErrorReadLine();
+                        await Task.Run(() => process.WaitForExit());
+                    }
+
+                    if (authFailureDetected)
+                    {
+                        pendingAssistantText.Clear();
+                        AppendAssistantLine("⚠ Anmeldung ungültig oder abgelaufen. Bitte oben auf \"Login\" klicken und den Login in einem normalen Terminal abschließen.");
+                        owner.SetLoggedOutStatus(authFailureDetails.ToString().Trim());
+                    }
+                    else if (keystoreLockDetected)
+                    {
+                        pendingAssistantText.Clear();
+                        AppendAssistantLine("⚠ Die Abacus CLI war kurzzeitig blockiert (z.B. durch ein offenes Login-Fenster). Bitte Login-Fenster schließen/beantworten und die Nachricht erneut senden.");
+                    }
+                    else if (pendingAssistantText.Length == 0)
+                    {
+                        AppendAssistantLine("(keine Ausgabe)");
+                    }
+
+                    // Leere die Anhänge nach erfolgreichem Senden
+                    attachments.Clear();
+                }
+                catch (Exception ex)
+                {
+                    AppendAssistantLine("Fehler beim Ausführen der Abacus CLI: " + ex.Message);
+                }
+                finally
+                {
+                    send.IsEnabled = true;
+                    cancel.Visibility = Visibility.Collapsed;
+                    status.Text = "";
+                    pendingAssistantMessage = null;
+                    currentProcess = null;
+                }
+            }
+
+            string BuildPromptWithAttachments(string latestUserText, System.Collections.ObjectModel.ObservableCollection<FileAttachment> attachments)
+            {
+                var sb = new StringBuilder();
+                if (!string.IsNullOrEmpty(latestUserText))
+                    sb.AppendLine(latestUserText);
+                
+                if (attachments.Count > 0)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("Attached files:");
+                    foreach (var att in attachments)
+                    {
+                        try
+                        {
+                            var content = File.ReadAllText(att.FilePath);
+                            sb.AppendLine($"\n--- File: {att.FileName} ---");
+                            sb.AppendLine(content);
+                            sb.AppendLine("--- End of file ---");
+                        }
+                        catch (Exception ex)
+                        {
+                            sb.AppendLine($"\n--- Error reading {att.FileName}: {ex.Message} ---");
+                        }
+                    }
+                }
+                return sb.ToString();
+            }
+
+            string BuildConversationPrompt(string latestUserText, System.Collections.ObjectModel.ObservableCollection<FileAttachment> attachments)
+            {
+                var sb = new StringBuilder();
+                var relevant = new System.Collections.Generic.List<ChatMessage>();
+                foreach (var m in messages)
+                {
+                    if (ReferenceEquals(m, pendingAssistantMessage)) continue;
+                    relevant.Add(m);
+                }
+                if (relevant.Count > 1)
+                {
+                    sb.AppendLine("Conversation so far:");
+                    for (int i = 0; i < relevant.Count - 1; i++)
+                    {
+                        sb.AppendLine((relevant[i].IsUser ? "User: " : "Assistant: ") + relevant[i].Text);
+                    }
+                    sb.AppendLine();
+                    sb.AppendLine("New message:");
+                }
+                sb.Append(latestUserText);
+
+                if (attachments.Count > 0)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine();
+                    sb.AppendLine("Attached files:");
+                    foreach (var att in attachments)
+                    {
+                        try
+                        {
+                            var content = File.ReadAllText(att.FilePath);
+                            sb.AppendLine($"\n--- File: {att.FileName} ---");
+                            sb.AppendLine(content);
+                            sb.AppendLine("--- End of file ---");
+                        }
+                        catch (Exception ex)
+                        {
+                            sb.AppendLine($"\n--- Error reading {att.FileName}: {ex.Message} ---");
+                        }
+                    }
+                }
+                return sb.ToString();
+            }
         }
     }
 

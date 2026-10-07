@@ -10,6 +10,7 @@ namespace AbacusAI.VisualStudio2026
     [InstalledProductRegistration("Abacus AI for Visual Studio 2026", "Abacus AI coding agent integration", "1.0")]
     [ProvideMenuResource("Menus.ctmenu", 2)]
     [ProvideToolWindow(typeof(ToolWindows.AbacusToolWindow))]
+    [ProvideOptionPage(typeof(ToolWindows.AbacusOptions), "Abacus AI", "Einstellungen", 0, 0, true)]
     [Guid(PackageGuidString)]
     public sealed class Package : AsyncPackage
     {
