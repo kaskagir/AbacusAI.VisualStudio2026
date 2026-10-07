@@ -2,6 +2,16 @@
 
 Native Visual Studio 2026 VSIX integration around the official Abacus AI CLI.
 
+## Download
+
+**[AbacusAI-Setup.exe herunterladen](Installer/dist/AbacusAI-Setup.exe)** (Version 1.1.0)
+
+Der Installer erkennt Visual Studio 2022 und 2026, installiert die Erweiterung und richtet bei Bedarf die Abacus-AI-CLI ein.
+
+1. Alle Visual-Studio-Fenster schließen.
+2. `AbacusAI-Setup.exe` ausführen. Falls Windows SmartScreen warnt: "Weitere Informationen" und "Trotzdem ausführen" wählen (die Datei ist nicht signiert).
+3. Visual Studio starten, `Ansicht -> Weitere Fenster -> Abacus AI` öffnen und auf "Login" klicken.
+
 ## Features
 
 - `View -> Other Windows -> Abacus AI` tool window
