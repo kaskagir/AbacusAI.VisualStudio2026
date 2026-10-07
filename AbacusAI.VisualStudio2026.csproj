@@ -1,0 +1,49 @@
+<Project>
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <RootNamespace>AbacusAI.VisualStudio2026</RootNamespace>
+    <AssemblyName>AbacusAI.VisualStudio2026</AssemblyName>
+    <GeneratePkgDefFile>true</GeneratePkgDefFile>
+    <UseCodebase>true</UseCodebase>
+    <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
+    <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
+    <IncludeDebugTypeInVSIXContainer>false</IncludeDebugTypeInVSIXContainer>
+    <VSSDKTargetMinorVersion>0</VSSDKTargetMinorVersion>
+    <DeployExtension>false</DeployExtension>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.14.2142">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.VisualStudio.Shell.Framework" Version="17.14.40264" />
+    <PackageReference Include="Microsoft.VisualStudio.Shell.Interop" Version="17.14.40260" />
+    <PackageReference Include="Microsoft.VisualStudio.Shell.15.0" Version="17.14.40264" />
+    <PackageReference Include="Microsoft.VisualStudio.Text.Data" Version="17.14.249" />
+    <PackageReference Include="Microsoft.VisualStudio.Text.Logic" Version="17.14.249" />
+    <PackageReference Include="Microsoft.VisualStudio.Text.UI" Version="17.14.249" />
+    <PackageReference Include="Microsoft.VisualStudio.Text.UI.Wpf" Version="17.14.249" />
+    <PackageReference Include="EnvDTE" Version="17.14.40260" />
+    <PackageReference Include="EnvDTE80" Version="17.14.40260" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="source.extension.vsixmanifest" SubType="Designer" />
+    <VSCTCompile Include="AbacusAI.VisualStudio2026.vsct">
+      <ResourceName>Menus.ctmenu</ResourceName>
+    </VSCTCompile>
+    <EmbeddedResource Update="VSPackage.resx">
+      <MergeWithCTO>true</MergeWithCTO>
+      <ManifestResourceName>VSPackage</ManifestResourceName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+  <Import Project="$(VsSDKInstall)\Microsoft.VsSDK.targets" Condition="Exists('$(VsSDKInstall)\Microsoft.VsSDK.targets')" />
+</Project>

@@ -1,0 +1,18 @@
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
+  <Metadata>
+    <Identity Id="AbacusAI.VisualStudio2026" Version="1.0.0" Language="en-US" Publisher="Local" />
+    <DisplayName>Abacus AI for Visual Studio 2026</DisplayName>
+    <Description xml:space="preserve">Native Visual Studio integration for the Abacus AI CLI.</Description>
+  </Metadata>
+  <Installation>
+    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[18.0,19.0)" />
+    <InstallationTarget Id="Microsoft.VisualStudio.Pro" Version="[18.0,19.0)" />
+    <InstallationTarget Id="Microsoft.VisualStudio.Enterprise" Version="[18.0,19.0)" />
+  </Installation>
+  <Dependencies>
+    <Dependency Id="Microsoft.Framework.NDP" DisplayName=".NET Framework" Version="[4.7.2,)" />
+  </Dependencies>
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.VsPackage" Path="AbacusAI.VisualStudio2026.dll" />
+  </Assets>
+</PackageManifest>
