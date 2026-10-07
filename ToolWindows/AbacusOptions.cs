@@ -12,6 +12,7 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
     {
         private string cliExecutable = "abacusai.exe";
         private string defaultModel = "";
+        private string defaultPermissionMode = "";
         private bool autoScroll = true;
         private int maxMessageHistory = 50;
         private bool showMetadata = false;
@@ -36,6 +37,15 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
         {
             get => defaultModel;
             set => defaultModel = value;
+        }
+
+        [Category("Allgemein")]
+        [DisplayName("Standard-Modus")]
+        [Description("Berechtigungsmodus der CLI: supervise, accept-edits, plan, auto, unsupervised (leer = Standard der CLI)")]
+        public string DefaultPermissionMode
+        {
+            get => defaultPermissionMode;
+            set => defaultPermissionMode = value;
         }
 
         [Category("Verhalten")]

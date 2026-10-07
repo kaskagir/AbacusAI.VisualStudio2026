@@ -196,6 +196,14 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             SelectedValuePath = "Value",
             Foreground = Brushes.Black
         };
+        readonly ComboBox modeBox = new ComboBox
+        {
+            Width = 150,
+            Margin = new Thickness(6, 0, 0, 0),
+            DisplayMemberPath = "Key",
+            SelectedValuePath = "Value",
+            Foreground = Brushes.Black
+        };
         readonly TextBlock status = new TextBlock { Foreground = TextSecondary, Margin = new Thickness(0, 2, 0, 0) };
 
         readonly TextBlock authStatus = new TextBlock
@@ -257,6 +265,9 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             
             if (!string.IsNullOrWhiteSpace(options.DefaultModel))
                 modelBox.SelectedValue = options.DefaultModel;
+
+            if (!string.IsNullOrWhiteSpace(options.DefaultPermissionMode))
+                modeBox.SelectedValue = options.DefaultPermissionMode;
         }
 
         void SaveOptionsFromUI(AbacusOptions options)
@@ -266,6 +277,8 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             options.CliExecutable = executable.Text.Trim();
             if (modelBox.SelectedValue != null)
                 options.DefaultModel = modelBox.SelectedValue.ToString();
+            if (modeBox.SelectedValue != null)
+                options.DefaultPermissionMode = modeBox.SelectedValue.ToString();
             
             options.SaveSettingsToStorage();
         }
@@ -286,9 +299,14 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             settingsBar.Children.Add(new TextBlock { Text = "Modell:", Foreground = TextSecondary, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) });
             LoadModels();
             settingsBar.Children.Add(modelBox);
+            settingsBar.Children.Add(new TextBlock { Text = "Modus:", Foreground = TextSecondary, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) });
+            LoadModes();
+            settingsBar.Children.Add(modeBox);
             
             // Wende gespeicherte Optionen an
             ApplyOptionsToUI(options);
+            modelBox.SelectionChanged += (_, __) => SaveOptionsFromUI(options);
+            modeBox.SelectionChanged += (_, __) => SaveOptionsFromUI(options);
             var newChat = new Button { Content = "＋ Neuer Chat", Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(10, 3, 10, 3), Background = ControlBg, Foreground = TextPrimary, BorderBrush = BorderCol };
             newChat.Click += (_, __) => AddTab(select: true);
             settingsBar.Children.Add(newChat);
@@ -310,6 +328,7 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             FontFamily = UiFont;
             executable.Padding = new Thickness(4, 2, 4, 2);
             modelBox.Padding = new Thickness(4, 2, 4, 2);
+            modeBox.Padding = new Thickness(4, 2, 4, 2);
 
             tabControl.ItemContainerStyle = BuildTabItemStyle();
             tabControl.Template = BuildTabControlTemplate();
@@ -729,11 +748,35 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             modelBox.SelectedIndex = 0;
         }
 
+        void LoadModes()
+        {
+            var kv = new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<string, string>>
+            {
+                new System.Collections.Generic.KeyValuePair<string, string>("Standard (CLI)", ""),
+                new System.Collections.Generic.KeyValuePair<string, string>("Auto", "auto"),
+                new System.Collections.Generic.KeyValuePair<string, string>("Supervise", "supervise"),
+                new System.Collections.Generic.KeyValuePair<string, string>("Accept edits", "accept-edits"),
+                new System.Collections.Generic.KeyValuePair<string, string>("Plan", "plan"),
+                new System.Collections.Generic.KeyValuePair<string, string>("Unsupervised", "unsupervised")
+            };
+            modeBox.ItemsSource = kv;
+            modeBox.SelectedIndex = 0;
+            modeBox.ToolTip =
+                "Auto: arbeitet selbstständig, prüft jeden Befehl/Edit, lehnt Gefährliches ab\n" +
+                "Supervise: fragt vor Edits und anderen verändernden Tools\n" +
+                "Accept edits: wendet Datei-Edits ohne Nachfrage an, fragt bei Befehlen\n" +
+                "Plan: nur lesen und planen, Edits erst nach Freigabe\n" +
+                "Unsupervised: führt jeden Befehl ohne Nachfrage aus";
+        }
+
         string BuildModelArgument()
         {
+            var arg = "";
             var model = (modelBox.SelectedValue as string ?? "").Trim();
-            if (model.Length == 0) return "";
-            return "--model " + Quote(model) + " ";
+            if (model.Length > 0) arg += "--model " + Quote(model) + " ";
+            var mode = (modeBox.SelectedValue as string ?? "").Trim();
+            if (mode.Length > 0) arg += "--permission-mode " + mode + " ";
+            return arg;
         }
 
         static string Quote(string value)
@@ -775,6 +818,17 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
             readonly Button send = new Button { Content = "Senden  ➤", Padding = new Thickness(14, 6, 14, 6), Margin = new Thickness(8, 0, 0, 0), Background = AccentBg, Foreground = Brushes.White, BorderBrush = AccentBg, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Bottom };
             readonly Button cancel = new Button { Content = "⊘ Abbrechen", Padding = new Thickness(14, 6, 14, 6), Margin = new Thickness(8, 0, 0, 0), Background = ErrorCol, Foreground = Brushes.White, BorderBrush = ErrorCol, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Bottom, Visibility = Visibility.Collapsed };
             readonly TextBlock status = new TextBlock { Foreground = TextSecondary, Margin = new Thickness(0, 2, 0, 0) };
+
+            readonly CheckBox includeActiveFile = new CheckBox
+            {
+                IsChecked = true,
+                Foreground = TextSecondary,
+                Margin = new Thickness(8, 6, 6, 0),
+                Visibility = Visibility.Collapsed
+            };
+            readonly TextBlock activeFileLabel = new TextBlock { TextTrimming = TextTrimming.CharacterEllipsis };
+            string activeFilePath;
+            System.Windows.Threading.DispatcherTimer activeFileTimer;
 
             ChatMessage pendingAssistantMessage;
             readonly StringBuilder pendingAssistantText = new StringBuilder();
@@ -891,6 +945,8 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
                 var bottom = new StackPanel();
                 bottom.Children.Add(attachmentScroll);
                 bottom.Children.Add(inputBar);
+                includeActiveFile.Content = activeFileLabel;
+                bottom.Children.Add(includeActiveFile);
                 bottom.Children.Add(new Border { Padding = new Thickness(6, 0, 6, 4), Child = status });
 
                 var grid = new Grid { Background = PanelBg };
@@ -901,6 +957,13 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
                 grid.Children.Add(chatScroll);
                 grid.Children.Add(bottom);
                 Content = grid;
+
+                Loaded += (_, __) =>
+                {
+                    ThreadHelper.ThrowIfNotOnUIThread();
+                    StartActiveFileTracking();
+                };
+                Unloaded += (_, __) => activeFileTimer?.Stop();
 
                 send.Click += async (_, __) => await SendInputAsync();
                 cancel.Click += (_, __) => CancelCurrentProcess();
@@ -927,14 +990,14 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
 
                 // Drag&Drop aktivieren
                 inputBorder.AllowDrop = true;
-                inputBorder.DragOver += (_, e) =>
+                inputBorder.PreviewDragOver += (_, e) =>
                 {
-                    e.Effects = (e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetDataPresent("System.Windows.Forms.DataFormats+Bitmap"))
+                    e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop)
                         ? DragDropEffects.Copy
                         : DragDropEffects.None;
                     e.Handled = true;
                 };
-                inputBorder.Drop += (_, e) =>
+                inputBorder.PreviewDrop += (_, e) =>
                 {
                     e.Handled = true;
                     HandleDroppedFiles(e);
@@ -984,38 +1047,70 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
                 chatScroll.ScrollToEnd();
             }
 
+            void StartActiveFileTracking()
+            {
+                ThreadHelper.ThrowIfNotOnUIThread();
+                RefreshActiveFile();
+                if (activeFileTimer == null)
+                {
+                    activeFileTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+                    activeFileTimer.Tick += (_, __) =>
+                    {
+                        ThreadHelper.ThrowIfNotOnUIThread();
+                        RefreshActiveFile();
+                    };
+                }
+                activeFileTimer.Start();
+            }
+
+            void RefreshActiveFile()
+            {
+                ThreadHelper.ThrowIfNotOnUIThread();
+                try
+                {
+                    var file = VisualStudioContext.GetCurrent().FilePath;
+                    activeFilePath = !string.IsNullOrWhiteSpace(file) && Path.IsPathRooted(file) && File.Exists(file) ? file : null;
+                }
+                catch
+                {
+                    activeFilePath = null;
+                }
+
+                if (activeFilePath == null)
+                {
+                    includeActiveFile.Visibility = Visibility.Collapsed;
+                    return;
+                }
+                activeFileLabel.Text = "@" + Path.GetFileName(activeFilePath) + " als Referenz mitsenden";
+                activeFileLabel.ToolTip = activeFilePath;
+                includeActiveFile.Visibility = Visibility.Visible;
+            }
+
             bool TryHandlePasteFilesOrImages()
             {
                 try
                 {
-                    var dataObject = Clipboard.GetDataObject();
-                    if (dataObject == null) return false;
+                    if (Clipboard.ContainsFileDropList())
+                    {
+                        foreach (var file in Clipboard.GetFileDropList())
+                            AddFileAttachment(file);
+                        return true;
+                    }
 
-                    // Versuche, ein Bild aus der Zwischenablage zu holen
-                    if (dataObject.GetDataPresent(DataFormats.Bitmap))
+                    if (Clipboard.ContainsImage())
                     {
-                        var bitmap = dataObject.GetData(DataFormats.Bitmap) as System.Drawing.Bitmap;
-                        if (bitmap != null)
-                        {
-                            InsertBitmapToInput(bitmap);
-                            return true;
-                        }
+                        var image = Clipboard.GetImage();
+                        if (image == null) return false;
+                        var tempDir = Path.Combine(Path.GetTempPath(), "AbacusAI");
+                        Directory.CreateDirectory(tempDir);
+                        var tempFile = Path.Combine(tempDir, "screenshot-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + ".png");
+                        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(image));
+                        using (var fs = File.Create(tempFile)) encoder.Save(fs);
+                        AddFileAttachment(tempFile);
+                        return true;
                     }
-                    
-                    // Versuche, Dateien aus der Zwischenablage zu holen
-                    if (dataObject.GetDataPresent(DataFormats.FileDrop))
-                    {
-                        var files = dataObject.GetData(DataFormats.FileDrop) as string[];
-                        if (files != null && files.Length > 0)
-                        {
-                            foreach (var file in files)
-                            {
-                                AddFileAttachment(file);
-                            }
-                            return true;
-                        }
-                    }
-                    
+
                     return false;
                 }
                 catch (Exception ex)
@@ -1054,79 +1149,11 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
                 return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" || ext == ".bmp" || ext == ".webp";
             }
 
-            void InsertBitmapToInput(System.Drawing.Bitmap bitmap)
-            {
-                try
-                {
-                    // Speichere das Bild temporär
-                    var tempDir = Path.Combine(Path.GetTempPath(), "AbacusAI");
-                    Directory.CreateDirectory(tempDir);
-                    var tempFile = Path.Combine(tempDir, "screenshot_" + DateTime.Now.Ticks + ".png");
-                    bitmap.Save(tempFile, System.Drawing.Imaging.ImageFormat.Png);
-
-                    InsertImageFileToInput(tempFile);
-                }
-                catch (Exception ex)
-                {
-                    status.Text = "Fehler beim Speichern des Bildes: " + ex.Message;
-                }
-            }
-
-            void InsertImageFileToInput(string imagePath)
-            {
-                try
-                {
-                    if (!File.Exists(imagePath))
-                    {
-                        status.Text = "Bilddatei nicht gefunden: " + imagePath;
-                        return;
-                    }
-
-                    // Konvertiere das Bild zu Base64
-                    var imageBytes = File.ReadAllBytes(imagePath);
-                    var base64 = Convert.ToBase64String(imageBytes);
-                    var ext = Path.GetExtension(imagePath).ToLowerInvariant().TrimStart('.');
-                    var mimeType = GetMimeType(ext);
-
-                    // Füge das Bild als Markdown-Bild-Tag ein
-                    var imageMarkdown = $"![Screenshot]({imagePath})";
-                    
-                    // Oder als Data-URI (für direkte Einbettung):
-                    // var imageMarkdown = $"![Screenshot](data:{mimeType};base64,{base64})";
-
-                    if (input.Text.Length > 0 && !input.Text.EndsWith("\n"))
-                        input.Text += "\n";
-                    
-                    input.Text += imageMarkdown;
-                    input.Focus();
-                    input.CaretIndex = input.Text.Length;
-
-                    status.Text = "Bild eingefügt: " + Path.GetFileName(imagePath);
-                }
-                catch (Exception ex)
-                {
-                    status.Text = "Fehler beim Einfügen des Bildes: " + ex.Message;
-                }
-            }
-
-            string GetMimeType(string extension)
-            {
-                return extension switch
-                {
-                    "png" => "image/png",
-                    "jpg" or "jpeg" => "image/jpeg",
-                    "gif" => "image/gif",
-                    "bmp" => "image/bmp",
-                    "webp" => "image/webp",
-                    _ => "image/png"
-                };
-            }
-
             void AddFileAttachment(string filePath)
             {
                 try
                 {
-                    if (!File.Exists(filePath))
+                    if (!File.Exists(filePath) && !Directory.Exists(filePath))
                     {
                         status.Text = "Datei nicht gefunden: " + filePath;
                         return;
@@ -1388,6 +1415,7 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
 
             async Task SendInputAsync()
             {
+                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
                 var text = input.Text?.Trim();
                 if (string.IsNullOrEmpty(text) && attachments.Count == 0) return;
 
@@ -1420,11 +1448,17 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
                 cancel.Visibility = Visibility.Visible;
                 status.Text = "Abacus arbeitet...";
 
+                RefreshActiveFile();
+                var refFiles = new System.Collections.Generic.List<FileAttachment>(attachments);
+                if (includeActiveFile.IsChecked == true && activeFilePath != null
+                    && !refFiles.Exists(a => string.Equals(a.FilePath, activeFilePath, StringComparison.OrdinalIgnoreCase)))
+                    refFiles.Insert(0, new FileAttachment(activeFilePath));
+
                 var userMessage = text ?? "";
-                if (attachments.Count > 0)
+                if (refFiles.Count > 0)
                 {
                     userMessage += "\n\nAngehängte Dateien:\n";
-                    foreach (var att in attachments)
+                    foreach (var att in refFiles)
                     {
                         userMessage += $"- {att.FileName}\n";
                     }
@@ -1447,8 +1481,8 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
                     
                     // Baue den Prompt mit Datei-Inhalten
                     var prompt = string.IsNullOrEmpty(conversationId) 
-                        ? BuildConversationPrompt(text, attachments) 
-                        : BuildPromptWithAttachments(text, attachments);
+                        ? BuildConversationPrompt(text, refFiles, workingDirectory) 
+                        : BuildPromptWithAttachments(text, refFiles, workingDirectory);
                     
                     var resumeArgument = string.IsNullOrEmpty(conversationId) ? "" : "--resume " + Quote(conversationId) + " ";
 
@@ -1538,35 +1572,50 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
                 }
             }
 
-            string BuildPromptWithAttachments(string latestUserText, System.Collections.ObjectModel.ObservableCollection<FileAttachment> attachments)
+            static string AtReference(string workingDirectory, string path)
             {
+                var rel = path.TrimEnd('\\', '/');
+                try
+                {
+                    if (!string.IsNullOrEmpty(workingDirectory))
+                    {
+                        var baseDir = workingDirectory.TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
+                        if (rel.StartsWith(baseDir, StringComparison.OrdinalIgnoreCase))
+                            rel = rel.Substring(baseDir.Length);
+                    }
+                }
+                catch { }
+                rel = rel.Replace('\\', '/');
+                return rel.IndexOf(' ') >= 0 ? "@\"" + rel + "\"" : "@" + rel;
+            }
+
+            string BuildAttachmentSection(System.Collections.Generic.IList<FileAttachment> files, string workingDirectory)
+            {
+                if (files.Count == 0) return "";
                 var sb = new StringBuilder();
-                if (!string.IsNullOrEmpty(latestUserText))
-                    sb.AppendLine(latestUserText);
-                
-                if (attachments.Count > 0)
+                var hasImage = false;
+                sb.AppendLine();
+                sb.AppendLine();
+                sb.Append("Referenzierte Dateien:");
+                foreach (var att in files)
+                {
+                    sb.Append(' ').Append(AtReference(workingDirectory, att.FilePath));
+                    if (IsImageFile(att.FilePath)) hasImage = true;
+                }
+                if (hasImage)
                 {
                     sb.AppendLine();
-                    sb.AppendLine("Attached files:");
-                    foreach (var att in attachments)
-                    {
-                        try
-                        {
-                            var content = File.ReadAllText(att.FilePath);
-                            sb.AppendLine($"\n--- File: {att.FileName} ---");
-                            sb.AppendLine(content);
-                            sb.AppendLine("--- End of file ---");
-                        }
-                        catch (Exception ex)
-                        {
-                            sb.AppendLine($"\n--- Error reading {att.FileName}: {ex.Message} ---");
-                        }
-                    }
+                    sb.Append("(Bilddateien darin sind Screenshots/Bilder des Nutzers: bitte ansehen und berücksichtigen.)");
                 }
                 return sb.ToString();
             }
 
-            string BuildConversationPrompt(string latestUserText, System.Collections.ObjectModel.ObservableCollection<FileAttachment> attachments)
+            string BuildPromptWithAttachments(string latestUserText, System.Collections.Generic.IList<FileAttachment> files, string workingDirectory)
+            {
+                return (latestUserText ?? "") + BuildAttachmentSection(files, workingDirectory);
+            }
+
+            string BuildConversationPrompt(string latestUserText, System.Collections.Generic.IList<FileAttachment> files, string workingDirectory)
             {
                 var sb = new StringBuilder();
                 var relevant = new System.Collections.Generic.List<ChatMessage>();
@@ -1586,27 +1635,7 @@ namespace AbacusAI.VisualStudio2026.ToolWindows
                     sb.AppendLine("New message:");
                 }
                 sb.Append(latestUserText);
-
-                if (attachments.Count > 0)
-                {
-                    sb.AppendLine();
-                    sb.AppendLine();
-                    sb.AppendLine("Attached files:");
-                    foreach (var att in attachments)
-                    {
-                        try
-                        {
-                            var content = File.ReadAllText(att.FilePath);
-                            sb.AppendLine($"\n--- File: {att.FileName} ---");
-                            sb.AppendLine(content);
-                            sb.AppendLine("--- End of file ---");
-                        }
-                        catch (Exception ex)
-                        {
-                            sb.AppendLine($"\n--- Error reading {att.FileName}: {ex.Message} ---");
-                        }
-                    }
-                }
+                sb.Append(BuildAttachmentSection(files, workingDirectory));
                 return sb.ToString();
             }
         }
